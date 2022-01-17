@@ -3,8 +3,6 @@ title: "Forecasting ASX Monthly Price"
 author: "Alex Hudson"
 output:
   pdf_document: default
-  html_notebook: default
-  html_document:
     df_print: paged
 ---
 
