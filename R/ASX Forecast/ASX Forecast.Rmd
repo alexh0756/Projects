@@ -1,0 +1,633 @@
+---
+title: "Forecasting ASX Monthly Price"
+author: "Alex Hudson"
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document:
+    df_print: paged
+---
+
+# Introduction 
+
+The aim of this report will be to investigate Australian Stock Exchange (ASX) price data and develop appropriate forecasts. Firstly, the data series and related data series will be analised to gain further understanding of them. This analysis will include examination of autocorrelation, stationarity, effects of transformations to reduce changing variance and nonstationarity and examination of seasonality. Secondly, models will be fit to the ASX price data using related time series as independent variables. The best models will be decided based on evaluation metrics, with it being plotted as a forecast alongside the best of each type of model. The data used includes the price of the ASX, of gold, of oil by barrel and of copper per ton by month from January 2004 to May 2017. 
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE
+)
+library(forecast)
+library(expsmooth)
+library(TSA)
+library(urca)
+library(dynlm)
+library(x12)
+library(tseries)
+library(dLagM)
+library(stringr)
+library(car)
+asx.data <- read.csv("C:\Users\Alex\Documents\Projects\ASX Prediction\data\ASX_data.csv")
+# gold and copper had a comma to demonstrate the thousands unit, this needed
+# to be removed and the data needed to be changed into a numeric vector
+asx.data$Gold.price <- as.numeric(str_remove(asx.data$Gold.price, ","))
+asx.data$Copper_USD.tonne <- as.numeric(str_remove(asx.data$Copper_USD.tonne, ","))
+
+
+asx.all <- ts(asx.data, start = c(2004, 1), frequency = 12)
+colnames(asx.all) <- c("asx.price", "gold.price", "oil.price", "copper.price")
+
+asx <- ts(asx.data$ASX.price, start = c(2004, 1), frequency = 12)
+gold <- ts(as.numeric(str_remove(asx.data$Gold.price, ",")), start = c(2004, 1), frequency = 12)
+oil <- ts(asx.data$Crude.Oil..Brent._USD.bbl, start = c(2004, 1), frequency = 12)
+copper <- ts(as.numeric(str_remove(asx.data$Copper_USD.tonne, ",")), start = c(2004, 1), frequency = 12)
+
+
+```
+
+```{r}
+head(asx)
+class(asx)
+```
+
+# Time Series Evaluation
+
+From a visual inspection, all four variables appear to have an increasing trend. This is further demonstrated by the ACF plots of each. Finally, the ADF test for each failed to reject the null, meaning that they are nonstationary. This means that the data needs to be differenced to make it more stationary before the data analysis can proceed.
+
+The visual inspection for each time series will examine trend, seasonality changing variance, presence of moving average or autoregressive behaviour and intervention points.
+
+              
+
+**ASX**
+
+- The series appears to positive trend with little changing variance throughout the series with a possible intervention point around 2008. Additionally, it demonstrates mostly autoregressive behaviour and seasonality may be present.
+
+**Gold**
+
+- The series demonstrates a clear positive trend with little changing variance and no clear intervention point. It shows autoregressive behaviour and lack of strong seasonality
+
+**Oil**
+
+- The series may have a positive trend, although it is not clear. Little changing variance is seen but a clear intervention point is present around 2008. The series demonstrates autoregressive behaviour and possible seasonality.
+
+**Copper**
+
+- The series shows a slight positive trend with some changing variance andf an intervention point around 2008. It demonstrates autoregressive behaviour and lack of strong seasonality.
+
+```{r}
+par(mfrow = c(2, 2))
+plot(asx, main = "ASX Price", ylab = "Price")
+plot(gold, main = "Gold Price", ylab = "Price (AUD)")
+plot(oil, main = "Oil Price per Barrel", ylab = "Price (USD/bbl)")
+plot(copper, main = "Copper Price per Ton", ylab = "Price (USD/tonne)")
+
+```
+
+```{r}
+acf.pacf <- function(data, name, figure){
+  par(mfrow = c(1, 2))
+  acf(data, lag.max = 48, main = NA)
+  pacf(data, lag.max = 48, main = NA)
+  title(paste0("\n", "Figure ", figure, ". ", name, " ACF and PACF"), outer = TRUE)
+  par(mfrow = c(1, 1))
+}
+```
+
+```{r, fig.height=2.75, fig.width=4.65}
+acf.pacf(asx, "ASX", 1)
+acf.pacf(gold, "Gold", 2)
+acf.pacf(oil, "Oil", 3)
+acf.pacf(copper, "Copper", 4)
+```
+
+## Stationarity of Data
+
+The stationarity was tested for the 4 time series, with all being described as nonstationary by the ADF and PP test. For the ASX series, the `adf.test()` from the `tseries` packaged produced a p-value of `0.285` which fails to reject the null hypothesis of nonstationarity, meaning it is nonstationary. Additional tests were performed from the `urca` package. The ADF test from this package produced a test-statistic of `0.453`, which was higher than the critical value at 1pct of `-2.58`, 5pct of `-1.95` and 10pct of `-1.62`. This means that the null hypothesis of nonstationarity was rejected. The PP test from this package returned a test-statistic of `-2.203`, with this being higher than the critical value at 5pct of `-2.880`. This means the null hypothesis of nonstationarity was not rejected and the series is nonstationary. Finally, the KPSS test was conducted, producing a test statistic of `0.873`. This was higher than the critical value at 5pct of `0.463`, meaning that the null hypothesis of stationarity was rejected and that the series is nonstationary. A similar analysis was undertaken for the gold, oil and copper series, finding nonstationarity in all three time series.
+
+```{r}
+checkstationarity <- function(data){
+  print(adf.test(data))
+  k = ar(data)$order
+  adf <- ur.df(data, type = "none", lags = k, selectlags = "AIC")
+  print(summary(adf))
+  pp <- ur.pp(data, type = "Z-tau", lags = "short")
+  print(summary(pp))
+  kpss <- ur.kpss(data)
+  print(summary(kpss))
+}
+
+checkstationarity(asx)
+checkstationarity(gold)
+checkstationarity(oil)
+checkstationarity(copper)
+```
+
+## Examination of Effects of Differencing and Transformations
+
+**ASX Price**
+
+For the ASX series, a log transformation did not appear to make a significant difference, which may be due to the initial low changing variance. Differencing demonstrated a large reduction in nonstationarity such that by the 4 stationarity tests agreed that the data was stationary.
+
+```{r, fig.height= 2.75}
+
+
+display <- function(data, name = NA, figure){
+  par(mfrow = c(1, 3))
+  plot(data, main = NA, cex.main = .9, ylab = NA)
+  acf(data, main = NA, cex.main = .9)
+  pacf(data, main = NA, cex.main = .6)
+  title(paste0("\n", "Figure ", figure, ". ", name, " Plot, ACF and PACF"), outer = TRUE)
+  par(mfrow = c(1, 1))
+}
+
+display(asx, "ASX", 9)
+display(log(asx), "Transformed ASX", 5)
+asx.diff <- diff(asx)
+checkstationarity(asx.diff)
+display(asx.diff, "Differenced ASX", 6)
+```
+
+**Gold Price**
+
+The Boxcox transformation appears to make some difference to the gold dataset, with the main difference being at the start of the series. The differencing makes a more significant difference to the dataset, with the differenced series being confirmed by the 4 stationarity tests as stationary.
+
+```{r, fig.height= 2.75}
+boxcox.auto <- function(data){
+  bc <-BoxCox.ar(data)
+  lambda <- mean(bc$ci)
+  transf <- forecast::BoxCox(data, lambda = lambda)
+}
+
+display(gold, "Gold", 7)
+```
+
+### Figure 8. BoxCox Plot
+```{r, fig.height= 2.75}
+gold.tr <- boxcox.auto(gold)
+display(gold.tr, "Gold", 9)
+
+gold.diff <- diff(gold)
+checkstationarity(gold.diff)
+display(gold.diff, "Gold", 10)
+```
+
+**Oil Price**
+
+The oil series seems to benefit from a log transformation to reduce changing variance, which is seen in both the undifferenced and differenced series. The differenced series is confirmed to be stationary by the 4 stationarity tests and with the transformation appears to demonstrate more consistent variance.
+
+
+```{r, fig.height= 2.75}
+display(oil, "Oil", 27)
+display(log(oil), "Oil", 11)
+
+oil.diff <- diff(oil)
+checkstationarity(oil)
+display(oil.diff, "Oil", 12)
+
+oil.diff.tr <- diff(log(oil))
+display(oil.diff.tr, "Oil", 13)
+```
+
+**Copper**
+
+The Boxcox transformation appears to make the variance in the copper series more consistent, although the effect is not large. Additionally, the differencing is confirmed to make the series stationary by the 4 stationarity test. The differenced and transformed series seems to be an improvement on the original differenced series, although some large changed from one point to another remain.
+
+```{r warning=FALSE, fig.height= 2.75}
+display(copper, "Copper", 14)
+```
+
+### Figure 15. BoxCox Plot
+```{r warning=FALSE, fig.height= 2.75}
+copper.tr <- boxcox.auto(copper)
+display(copper.tr, "Copper", 16)
+
+copper.diff <- diff(copper)
+checkstationarity(copper.diff)
+display(copper.diff, "Copper", 17)
+
+copper.diff.tr <- diff(copper.tr)
+display(copper.diff.tr, "Copper", 18)
+```
+
+```{r, fig.height= 3.8, fig.width=5}
+plot(asx, main = "Figure 19. ASX Plot with Seasonal Markers")
+points(y=asx, x=time(asx), pch=as.vector(season(asx)), main = "Figure 17. ASX Plot with Seasonal Markers")
+```
+
+
+## Decomposition and Forecasting
+
+Decomposition demonstrates the trend in the ASX series. A pattern in the seasonal component of the series is less clear, the plot of seasonal factors demonstrates a large difference in seasonal component between months. For this reason the series was forecasted with seasonal adjustment. The forecast predicts that the ASX price will continue to rise as it has in the past.
+
+```{r, fig.width=5, fig.height=3.8}
+asx.decom <- stl(asx, t.window = 15, s.window = "periodic", robust = TRUE)
+plot(asx.decom, main = "Figure 20. Decomposition of ASX time series")
+asx.decomp12 <- x12(asx)
+plotSeasFac(asx.decomp12, main = "Figure 21. Seasonal Factors by period and SI Ratio for ASX")
+x12::plot(asx.decomp12, sa = TRUE, trend = TRUE, forecast = TRUE, main = "Figure 22. ASX Series with Forecast")
+```
+
+The trend of the gold series was demonstrated by the decomposition. The seasonal factors may suggest some seasonality in the series, although the seasonal factors are small. The forecast without seasonal adjustment predicts that the series will remain at its current level where it finished the series.
+
+```{r, fig.width=5, fig.height=3.8}
+gold.decom <- stl(gold, t.window = 15, s.window = "periodic", robust = TRUE)
+plot(gold.decom, main = "Figure 23. Decomposition of Gold time series")
+gold.decomp12 <- x12(gold)
+plotSeasFac(gold.decomp12, main = "Figure 24. Seasonal Factors by period and SI Ratio for Gold")
+x12::plot(gold.decomp12, sa = FALSE, trend = TRUE, forecast = TRUE, main = "Figure 25. Gold Series with Forecast")
+```
+
+Decomposition of the oil time series demonstrates the trend overtime. Additionally, the plot of seasonal factors shows the pattern of seasonality throughout the data. Therefore, the forecast used the trend and seasonal adjustment. It predicts that the series will remain relatively stable in the future.
+
+```{r, fig.width=5, fig.height = 3.8}
+oil.decom <- stl(oil, t.window = 15, s.window = "periodic", robust = TRUE)
+plot(oil.decom, main = "Figure 26. Decomposition of Oil time series")
+oil.decomp12 <- x12(oil)
+plotSeasFac(oil.decomp12, main = "Figure 27. Seasonal Factors by period and SI Ratio for Oil")
+x12::plot(oil.decomp12, sa = TRUE, trend = TRUE, forecast = TRUE, main = "Figure 28. Gold Series with Forecast")
+```
+
+The trend is demonstrated by the decomposition of the time series. The plot of seasonal factors suggests little seasonal component, therefore, it will not be used in the forecast. The forecast predicts that the series will remain consistent in the future.
+
+```{r, fig.width=5, fig.height=3.8}
+copper.decom <- stl(copper, t.window = 15, s.window = "periodic", robust = TRUE)
+plot(copper.decom, main = "Figure 29. Decomposition of Copper time series")
+copper.decomp12 <- x12(copper)
+plotSeasFac(copper.decomp12, main = "Figure 30. Seasonal Factors by period and SI Ratio for Copper")
+x12::plot(copper.decomp12, sa = TRUE, trend = TRUE, forecast = TRUE, main = "Figure 31. Gold Series with Forecast")
+```
+
+
+
+# Model Fitting
+
+To predict and forecast the price of the ASX in the future models will be fit and evaluated. The models used will be the distributed lag models, the polynomial distributed lag model, the Koyck model and the autoregressive distributed lag model. To evaluate these model using AIC/BIC, the adjusted R squared and model and coefficient significance values will be used. Furthermore, residuals will be examined to evaluate the effectiveness of the model fit and variance inflation factors (VIFs) will be used to examine whether the model has satisfied the multicollinearity assumption.
+
+```{r, fig.width=5, fig.height=3.8}
+plot(asx.all, plot.type = "s", type = 'l', col = c("blue", "red", "green", "black"), main = "Figure 32. Time Series Dataset")
+legend("topleft", lty = 1, pch = 1, text.width = 1.5, col = c("blue", "red", "green", "black"), c("ASX", "Gold", "Oil", "Copper"), cex = .7)
+```
+```{r, fig.width=5, fig.height=3.8}
+plot(scale(asx.all), plot.type = "s", type = 'l', col = c("blue", "red", "green", "black"), main = "Figure 33. Scaled Time Series Dataset")
+legend("topleft", lty = 1, pch = 1, text.width = 1.5, col = c("blue", "red", "green", "black"), c("ASX", "Gold", "Oil", "Copper"), cex = .7)
+```
+
+## Distributed Lag Models (DLMs)
+
+To predict ASX price, gold, oil and copper were used used as independent variables to fit distributed lag models (DLMs). Six models were attempted, 1 with each variable and 3 with combinations of them. However, none of these models demonstrated high success, with each model leaving high serial correlation in the residuals as demonstrated by the Breusch-Godfrey test and ACF visual inspection. This implies that the models struggled to account for the variance in the data. The very low to moderate adjusted R squared values found by the model further supports this. Additionally, all models violated the multicollinearity assumption. In terms of statistical significance, all models were significant at alpha 0.05. However, 4 of the models did not have a significant coefficient, with model 5 and 6 having the first lag of copper as significant `(p < 0.05)`. The models appeared to favour a higher number of lags with the AIC/BIC values lowering as these increased. However, since the first lags were not significant, adding more lags resulted in adding nonsignificant coefficients. Additionally, adjusted R squared decreased as lags were increased. Therefore, a lag of  1 was considered to be optimal for all models. Finally, AIC/BIC were used to diferentiate between the final 6 models and demonstrated that model 5 was the best performing model.
+
+
+Model 5 used oil and copper price to explain ASX price using 1 lag. The model was statistically significant at `p < 0.05`, with the first lag of copper as a significant parameter. Additionally, it demonstrated an adjusted R squared of 0.404. Although the residuals from the model demonstrated serial correlation and nonnormality of distribution. Finally, as the other models, the model violated the multicollinearity assumption. Therefore, the model was the best of the DLM models but was not concluded to be a suitable model. To attempt to produce a model which does not violate the multicollinearity assumption, a polynomial DLM model will be implemented.
+
+
+
+### DLM outputs
+
+```{r}
+modeldlm1 <- dlm(formula = asx.price ~ gold.price, data = data.frame(asx.all), q = 1)
+summary(modeldlm1)
+```
+
+### Figure 34. Residuals of DLM 1
+```{r}
+checkresiduals(modeldlm1$model)
+shapiro.test(modeldlm1$model$fitted.values)
+finiteDLMauto(x = as.vector(gold), y = as.vector(asx), q.min = 1, q.max = 10,
+              model.type = "dlm", error.type = "AIC", trace = TRUE)
+vif(modeldlm1$model)
+```
+
+```{r}
+modeldlm2 <- dlm(formula = asx.price ~ oil.price, data = data.frame(asx.all), q = 1)
+summary(modeldlm2)
+```
+
+### Figure 35. Residuals of DLM 2
+```{r}
+checkresiduals(modeldlm2$model)
+shapiro.test(modeldlm2$model$fitted.values)
+finiteDLMauto(formula = asx.price ~ oil.price, data = data.frame(asx.all), q.min = 1, q.max = 10,
+              model.type = "dlm", error.type = "AIC", trace = TRUE)
+vif(modeldlm2$model)
+```
+
+```{r}
+modeldlm3 <- dlm(formula = asx.price ~ copper.price, data = data.frame(asx.all), q = 1)
+summary(modeldlm3)
+```
+
+### Figure 36. Residuals of DLM 3
+```{r}
+checkresiduals(modeldlm3$model)
+shapiro.test(modeldlm3$model$fitted.values)
+finiteDLMauto(formula = asx.price ~ copper.price, data = data.frame(asx.all), q.min = 1, q.max = 10,
+              model.type = "dlm", error.type = "AIC", trace = TRUE)
+vif(modeldlm3$model)
+```
+
+```{r}
+modeldlm4 <- dlm(formula = asx.price ~ gold.price + oil.price, data = data.frame(asx.all), q = 1)
+summary(modeldlm4)
+```
+
+### Figure 37. Residuals of DLM 4
+```{r}
+checkresiduals(modeldlm4$model)
+shapiro.test(modeldlm4$model$fitted.values)
+finiteDLMauto(formula = asx.price ~ gold.price + oil.price, data = data.frame(asx.all), q.min = 1, q.max = 10,
+              model.type = "dlm", error.type = "AIC", trace = TRUE)
+vif(modeldlm4$model)
+```
+```{r}
+modeldlm5 <- dlm(formula = asx.price ~ oil.price + copper.price, data = data.frame(asx.all), q = 1)
+summary(modeldlm5)
+```
+
+### Figure 38. Residuals of DLM 5
+```{r}
+checkresiduals(modeldlm5$model)
+shapiro.test(modeldlm5$model$residuals)
+finiteDLMauto(formula = asx.price ~ oil.price + copper.price, data = data.frame(asx.all), q.min = 1, q.max = 10,
+              model.type = "dlm", error.type = "AIC", trace = TRUE)
+vif(modeldlm5$model)
+```
+
+```{r}
+modeldlm6 <- dlm(formula = asx.price ~ gold.price + oil.price + copper.price, data = data.frame(asx.all), q = 1)
+summary(modeldlm6)
+```
+
+### Figure 39. Residuals of DLM 6
+```{r}
+checkresiduals(modeldlm6$model)
+shapiro.test(modeldlm6$model$fitted.values)
+finiteDLMauto(formula = asx.price ~ gold.price + oil.price + copper.price, data = data.frame(asx.all), q.min = 1, q.max = 10,
+              model.type = "dlm", error.type = "AIC", trace = TRUE)
+vif(modeldlm6$model)
+```
+
+```{r}
+AIC(modeldlm1$model, modeldlm2$model, modeldlm3$model, modeldlm4$model, modeldlm5$model, modeldlm6$model)
+```
+
+## Polynomial Distributed Lag Models
+
+Three polynomial distributed lag models (PDLMs), one for each independent variable, were implemented to attempt to explain variance similarly to the DLM models without violating multicollinearity. All models were statistically significant at `p < 0.05`, although all the coefficients in all models were not significant at `p < 0.05`. Additionally, all models had nonnormaly distributed residuals with serial correlation and all models violated multicollinearity. This demonstrates that the models are not suitable to explain the data and do so poorly. A `q = 1` and `k = 1` was chosen to maximise adjusted R squared since these model encountered the same problem as DLM models, in that AIC/BIC would be optimised only through adding nonsignificant lags. With these specifications, the third model performed the best, demonstrating a adjusted R squared value of `0.294` and the lowest AIC value.
+
+The third polynomial model was decided by the evaluative measures as the best model. It had the lowest AIC score, in addition to having significantly higher adjusted R squared than the other models.
+
+### Polynomial DLM output
+
+```{r}
+modelpoly1 <- polyDlm(x = as.vector(gold), y = as.vector(asx), q = 1, k = 1)
+summary(modelpoly1)
+```
+
+### Figure 40. Residuals of PDLM 1
+```{r}
+checkresiduals(modelpoly1$model)
+shapiro.test(modelpoly1$model$fitted.values)
+finiteDLMauto(x = as.vector(gold), y = as.vector(asx), data = data.frame(asx.all), q.min = 1, q.max = 5, k.order = 1,
+              model.type = "poly", error.type = "AIC", trace = TRUE)
+vif(modelpoly1$model)
+```
+
+```{r}
+modelpoly2 <- polyDlm(x = as.vector(oil), y = as.vector(asx), q = 1, k = 1)
+summary(modelpoly2)
+```
+
+### Figure 41. Residuals of PDLM 2
+```{r}
+checkresiduals(modelpoly2$model)
+shapiro.test(modelpoly2$model$fitted.values)
+finiteDLMauto(x = as.vector(oil), y = as.vector(asx), data = data.frame(asx.all), q.min = 1, q.max = 5, k.order = 1,
+              model.type = "poly", error.type = "AIC", trace = TRUE)
+vif(modelpoly2$model)
+```
+
+```{r}
+modelpoly3 <- polyDlm(x = as.vector(copper), y = as.vector(asx), q = 1, k = 1)
+summary(modelpoly3)
+```
+
+### Figure 42. Residuals of PDLM 3
+```{r}
+checkresiduals(modelpoly3$model)
+shapiro.test(modelpoly3$model$fitted.values)
+finiteDLMauto(x = as.vector(copper), y = as.vector(asx), data = data.frame(asx.all), q.min = 1, q.max = 5, k.order = 1,
+              model.type = "poly", error.type = "AIC", trace = TRUE)
+vif(modelpoly3$model)
+```
+
+```{r}
+AIC(modelpoly1$model, modelpoly2$model, modelpoly3$model)
+```
+
+## Koyck distributed lag models
+
+Similar to the PDLM models, 3 Koyck models were implemented, one for each independent variable. All 3 models are statistically significant, although each model only had the first lag as a significant coefficient. Additionally, each model had an adjusted R squared of between 0.94 and 0.95, demonstrating good ability to explain variance. Although the residuals are not completely random, they look more random than the previous models, demonstrating an improvement. The residuals were confirmed through a shapiro-wilks test to be nonnormally distributed. Finally, all the models satisfied the assumption of multicollinearity.
+
+The second Koyck model using oil as the independent variable was decided to be the best model. This model was evaluated to be the best by the AIC with it also having the highest adjusted R squared value. However, all the Koyck models were relatively close in when evaluated and the second model. Although the second model was by evaluative measures the best, it was not a significant improvement on the other two.
+
+### Koyck DLM output
+
+```{r}
+modelk1 <- koyckDlm(x = as.vector(gold), y = as.vector(asx))
+summary(modelk1)
+```
+
+### Figure 43. Residuals of Koyck DLM 1
+```{r}
+checkresiduals(modelk1$model)
+shapiro.test(modelk1$model$residuals)
+vif(modelk1$model)
+```
+
+```{r}
+modelk2 <- koyckDlm(x = as.vector(oil), y = as.vector(asx))
+summary(modelk2)
+```
+
+### Figure 44. Residuals of Koyck DLM 2
+```{r}
+checkresiduals(modelk2$model)
+vif(modelk2$model)
+```
+
+```{r}
+modelk3 <- koyckDlm(x = as.vector(copper), y = as.vector(asx))
+summary(modelk3)
+```
+
+### Figure 45. Residuals of Koyck DLM 3
+```{r}
+checkresiduals(modelk3$model)
+vif(modelk3$model)
+```
+
+```{r}
+AIC(modelk1); AIC(modelk2); AIC(modelk3)
+```
+
+## Autoregressive Distributed Lag Models
+
+The autoregressive distributed lag models (ARDLM) demonstrated a significant improvement on the DLM and PDLM models. In addition to all the models being significant, the models demonstrated adjusted R squared between `0.95` and `0.96` with most models having all coefficients being significant at `q = 1` and `p = 1`. Additionally, these models seemed to effectively eliminate autocorrelation in the residuals. The residuals from these models appeared more normally distributed than previous models, although Shapiro Wilk tests rejected the null of normality. For these models similar pattern presented as in the DLM models, such that AIC/BIC favour more parameters. Finally, these modeled violated the multicollinearity assumption, with the components of the independent series violating the assumption.
+
+The best model of the ARDL models was the second model, which used oil price as the dependent variable for ASX price. This model had q = 1 and p = 1, and demonstrated an adjusted R squared of `0.952` with each coefficient significant. Additionally, it had the second lowest AIC score, only being higher than model, which had more parameters with not all significant.
+
+
+### ARDLM Output
+```{r}
+modelar1 <- ardlDlm(formula = asx.price ~ gold.price, data = data.frame(asx.all), q = 1, p = 1)
+summary(modelar1)
+```
+
+### Figure 46. Residuals of ARDLM 1
+```{r}
+checkresiduals(modelar1$model)
+shapiro.test(modelar1$model$fitted.values)
+vif(modelar1$model)
+
+ardlm.search <- function(formula, data, p, q){
+  for (i in 1:p){
+    for (j in 1:q){
+      modelx <- ardlDlm(formula, data = data.frame(data), p = i, q = j)
+      cat("q = ", i, "q = ", j, "AIC = ", AIC(modelx$model), "BIC = ", BIC(modelx$model),"\n")
+    }
+  }
+}
+
+ardlm.search(formula = asx.price ~ gold.price, asx.all, 5, 5)
+```
+
+```{r}
+modelar2 <- ardlDlm(formula = asx.price ~ oil.price, data = data.frame(asx.all), q = 1, p = 1)
+summary(modelar2)
+```
+
+### Figure 47. Residuals of ARDLM 2
+```{r}
+checkresiduals(modelar2$model)
+shapiro.test(modelar2$model$fitted.values)
+vif(modelar2$model)
+
+ardlm.search(formula = asx.price ~ oil.price, asx.all, 5, 5)
+```
+
+```{r}
+modelar3 <- ardlDlm(formula = asx.price ~ copper.price, data = data.frame(asx.all), q = 1, p = 1)
+summary(modelar3)
+```
+
+### Figure 48. Residuals of ARDLM 3
+```{r}
+checkresiduals(modelar3$model)
+shapiro.test(modelar3$model$fitted.values)
+vif(modelar3$model)
+
+for (i in 1:5){
+  for (j in 1:5){
+    modelx <- ardlDlm(formula = asx.price ~ copper.price, data = data.frame(asx.all), p = i, q = j)
+    cat("q = ", i, "q = ", j, "AIC = ", AIC(modelx$model), "BIC = ", BIC(modelx$model),"\n")
+  }
+}
+ardlm.search(formula = asx.price ~ copper.price, asx.all, 5, 5)
+```
+
+```{r}
+modelar4 <- ardlDlm(formula = asx.price ~ gold.price + oil.price, data = data.frame(asx.all), q = 1, p = 1)
+summary(modelar4)
+```
+
+### Figure 49. Residuals of ARDLM 4
+```{r}
+checkresiduals(modelar4$model)
+shapiro.test(modelar4$model$fitted.values)
+vif(modelar4$model)
+
+ardlm.search(formula = asx.price ~ gold.price + oil.price, asx.all, 5, 5)
+```
+
+```{r}
+modelar5 <- ardlDlm(formula = asx.price ~ oil.price + copper.price, data = data.frame(asx.all), q = 1, p = 1)
+summary(modelar5)
+```
+
+### Figure 50. Residuals of ARDLM 5
+```{r}
+checkresiduals(modelar5$model)
+shapiro.test(modelar5$model$fitted.values)
+vif(modelar5$model)
+
+ardlm.search(formula = asx.price ~ oil.price + copper.price, asx.all, 5, 5)
+```
+
+```{r}
+modelar6 <- ardlDlm(formula = asx.price ~ gold.price + oil.price + copper.price, data = data.frame(asx.all), q = 1, p = 1)
+summary(modelar6)
+```
+
+### Figure 51. Residuals of ARDLM 6
+```{r}
+checkresiduals(modelar6$model)
+shapiro.test(modelar6$model$fitted.values)
+vif(modelar6$model)
+
+ardlm.search(formula = asx.price ~ gold.price + oil.price + copper.price, asx.all, 5, 5)
+```
+
+```{r}
+AIC(modelar1$model, modelar2$model, modelar3$model, modelar4$model, modelar5$model, modelar6$model)
+```
+
+
+### Overall AIC
+```{r}
+AIC <- c(AIC(modeldlm5$model), AIC(modelpoly3$model), AIC(modelk2), AIC(modelar4$model))
+data.frame(AIC, row.names = c("DLM", "PolyDLM", "KoyckDLM", "ARDLM"))
+```
+
+
+# Forecasting
+
+The best model from each type will be used to visualise forecasts. Of the models tested the Koyck DLM model appears to be the best model. It demonstrated a high adjusted R squared, overall significance, significance of coefficients and did not violate the multicollinearity assumption. The second best models were from the ARDLMs, which demonstrated models which could combine two dependent variables to produce a model with high adjusted R squared and significant parameters. However, these models violated the assumption of multicollinearity so the results cannot be trusted in the same way that Koyck models can. Worth noting is that ARDLM received the lowest AIC scores of the 4 model types, with the Koyck model receiving the second lowest.
+
+The forecast in Figure 52. demonstrates the predictions for each model selected. The DLM and PDLM predicted that the ASX would significantly decrease in price and then at a slower rate continue to decrease. The Koyck DLM and ARDLM, which were decided to be the best two models, demonstrate predictions closer to where the ASX series finishes. The Koyck DLM predicts a steady increase of the ASX price over the next 4 month. This is slightly different to the ARDLM, which predicts an slight increase then a continued slight decrease in the ASX price.
+
+```{r}
+forecast.data <- matrix(c(1675, 1700, 1725, 1750, 50.87, 48, 46, 44, 5599, 5420, 5340, 5260), nrow = 3, ncol = 4, byrow = TRUE)
+model1Frc <- dLagM::forecast(modeldlm5, x = forecast.data[2:3,], h = 4)
+model2Frc <- dLagM::forecast(modelpoly3, x = forecast.data[3,], h = 4)
+model3Frc <- dLagM::forecast(modelk2, x = forecast.data[2,], h = 4)
+model4Frc <- dLagM::forecast(modelar4, x = forecast.data[1:2,], h = 4)
+
+
+plot(ts(c(as.vector(asx), model1Frc$forecasts), start = c(2004, 1), frequency = 12), col = "blue", type = 'l', main = "Figure 52. Forecast of ASX Price", ylab = "ASX Price", xlab = "Year")
+forecasts <- list(model1Frc$forecasts, model2Frc$forecasts, model3Frc$forecasts, model4Frc$forecasts, rep(NA, 5))
+for (i in 1:5){
+  colour <- c("blue", "red", "green", "purple", "black")
+  lines(ts(c(as.vector(asx), forecasts[[i]]), start = c(2004, 1), frequency = 12), col = colour[i], type = 'l')
+}
+legend("topleft", lty = 1, pch = 1, text.width = 1.8, cex = .8, col = c("blue", "red", "green", "purple", "black"), c("DLM", "PolyDLM", "KoyckDLM", "ARDLM", "ASX"))
+```
+```{r}
+forecasts <- data.frame(model1Frc$forecasts, model2Frc$forecasts, model3Frc$forecasts, model4Frc$forecasts)
+forecasts
+```
+
+
+# Summary
+
+The aim of this investigation was to examine the ASX price data from January 2004 to May 2017 with similar data to use for forecasting. It was split into two parts with the first being the examination of the dataset and the second the model fitting and forecasting.
+
+For the first part, the examination analysed stationarity, changing variance and seasonality predominantly. All 4 time series were concluded to be nonstationary, although a single differecing was sufficient to convert the series into stationary series. In terms of changing variance, the oil and copper series benefitted the most from either log or Boxcox transformations to reduce its effect. Finally, decomposition of trend and seasonality was undertaken for each series. ASX and oil series appeared to have seasonal components based on the seasonal factors. Therefore, the forecasts based on the decompositions for these 2 series used seasonal adjusting, with gold and copper not needing the adjustment.
+
+For the second part, 4 types of models were fit to the ASX data with different combinations of the possible independent variables. The first model, the distributed lag model (DLM), appeared to struggle with the data. It had relatively explanatory power and violated the multicollinearity assumption of the model. To fix this, the polynomial distributed lag model (PDLM) was attempted. This model had similar success to the DLM models and did not fix the violation of the assumption. Koyck distributed lag models were then attempted, with greater success than the 2 previous models. It demonstrated a strong ability to explain variance, with the model being overall significant as well as its coefficients. The Koyck model also demonstrated an improvement in its residuals, with them not demonstrating serial correlation. Importantly, this model also satisfied the assumption of multicollinearity. Finally, the autoregressive distributed lag model (ARDLM) was implimented. This model demonstrated similar improvements over the DLMs and PDLMs that Koyck models showed. However, the ARDLMs failed to satisfy the assumption of multicollinearity. The best of each model type were then evaluated with the AIC. The ARDLM model ranked as the best in this, with the Koyck model ranking as second. However, since the ARDLM model failed to satisfy the multicollinearity assumption the Koyck model was selected as the best model.
+
+Four month forecasts of ASX price were run for the best of each model. The DLM and PDLM showed forecasts that dramatically deviated from the last point in the time series. The Koyck model and ARDLM demonstrated predicted closer to the final point of the time series. The main difference between the two was the increasing trend of the Koyck prediction and the decreasing trend of the ARDLM.
+
+# Conclusion
+
+Based on the investigation and analyses conducted, the ASX price is predicted to increase over the next four months if oil prices continue in their trend. Although an alternate model suggests the ASX to decrease, the selected model was evaluated to be the best of the models available and should be the model used. 
