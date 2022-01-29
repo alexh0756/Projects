@@ -1,6 +1,6 @@
 # Projects
 
-## Languages
+## Language
 
 #### Python
 - [Human Action Recognition CNN](https://github.com/alexh0756/Projects/tree/main/Python/Human%20Action%20Recognition%20CNN)
