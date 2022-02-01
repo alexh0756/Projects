@@ -9,6 +9,7 @@
 
 #### R
 - [ASX Forecast](https://github.com/alexh0756/Projects/blob/main/R/ASX%20Forecast)
+- [US Unemployment Time Series Analysis](https://github.com/alexh0756/Projects/tree/main/R/US%20Unemployment%20Time%20Series%20Analysis)
 
 #### SQL
 - [Nutrition Database](https://github.com/alexh0756/Projects/tree/main/SQL/Nutrition%20Database)
